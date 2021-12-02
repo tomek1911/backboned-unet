@@ -162,6 +162,8 @@ class Unet(nn.Module):
 
         self.replaced_conv1 = False  # for accommodating  inputs with different number of channels later
 
+        self.features = None
+
     def freeze_encoder(self):
 
         """ Freezing encoder parameters, the newly initialized decoder parameters are remaining trainable. """
