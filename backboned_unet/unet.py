@@ -120,7 +120,21 @@ class UpsampleBlock(nn.Module):
 
         return x
 
+class EncoderHead(nn.Module):
+    def __init__(self, channels, features, num_classes):
+        super().__init__()
+        self.drop = nn.Dropout(p=0.2)
+        self.conv = nn.Conv2d(channels,num_classes,1)
+        self.avgpool = nn.AvgPool2d(features, None, 0)
+        self.sigmoid = nn.Sigmoid()
 
+    def forward(self, x):
+        x = self.drop(x)
+        x = self.conv(x)
+        x = self.avgpool(x)
+        x = x.view(-1)
+        x = self.sigmoid(x)
+        return x
 class Unet(nn.Module):
 
     """ U-Net (https://arxiv.org/pdf/1505.04597.pdf) implementation with pre-trained torchvision backbones."""
@@ -130,7 +144,9 @@ class Unet(nn.Module):
                  pretrained=True,
                  encoder_freeze=False,
                  classes=21,
+                 classes_encoder = 3,
                  decoder_filters=(256, 128, 64, 32, 16),
+                 infer_tensor = torch.zeros(1, 3, 224, 224),
                  parametric_upsampling=True,
                  shortcut_features='default',
                  decoder_use_batchnorm=True):
@@ -139,9 +155,12 @@ class Unet(nn.Module):
         self.backbone_name = backbone_name
 
         self.backbone, self.shortcut_features, self.bb_out_name = get_backbone(backbone_name, pretrained=pretrained)
-        shortcut_chs, bb_out_chs = self.infer_skip_channels()
+        shortcut_chs, bb_out_chs, bb_out_features = self.infer_skip_channels(infer_tensor)
         if shortcut_features != 'default':
             self.shortcut_features = shortcut_features
+
+        #prepare classification head
+        self.encoder_head = EncoderHead(bb_out_chs, bb_out_features, classes_encoder)
 
         # build decoder part
         self.upsample_blocks = nn.ModuleList()
@@ -176,13 +195,15 @@ class Unet(nn.Module):
         """ Forward propagation in U-Net. """
 
         x, features = self.forward_backbone(*input)
+        bb_x = self.encoder_head(x)
 
         for skip_name, upsample_block in zip(self.shortcut_features[::-1], self.upsample_blocks):
             skip_features = features[skip_name]
             x = upsample_block(x, skip_features)
 
         x = self.final_conv(x)
-        return x
+        
+        return x, bb_x
 
     def forward_backbone(self, x):
 
@@ -198,11 +219,11 @@ class Unet(nn.Module):
 
         return x, features
 
-    def infer_skip_channels(self):
+    def infer_skip_channels(self, infer_tensor = torch.zeros(1, 3, 224, 224)):
 
         """ Getting the number of channels at skip connections and at the output of the encoder. """
 
-        x = torch.zeros(1, 3, 224, 224)
+        x = infer_tensor
         has_fullres_features = self.backbone_name.startswith('vgg') or self.backbone_name == 'unet_encoder'
         channels = [] if has_fullres_features else [0]  # only VGG has features at full resolution
 
@@ -213,8 +234,9 @@ class Unet(nn.Module):
                 channels.append(x.shape[1])
             if name == self.bb_out_name:
                 out_channels = x.shape[1]
+                out_features = x.shape[2]
                 break
-        return channels, out_channels
+        return channels, out_channels, out_features
 
     def get_pretrained_parameters(self):
         for name, param in self.backbone.named_parameters():
@@ -233,9 +255,10 @@ class Unet(nn.Module):
 
 
 if __name__ == "__main__":
-
+    
+    input_sample = torch.zeros(1, 3, 224, 224)
     # simple test run
-    net = Unet(backbone_name='resnet18')
+    net = Unet(backbone_name='resnet18', pretrained=True, infer_tensor=input_sample, classes=1, classes_encoder=3)
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(net.parameters())
@@ -245,7 +268,7 @@ if __name__ == "__main__":
             batch = torch.empty(1, 3, 224, 224).normal_()
             targets = torch.empty(1, 21, 224, 224).normal_()
 
-            out = net(batch)
+            out, bb_out = net(batch)
             loss = criterion(out, targets)
             loss.backward()
             optimizer.step()
