@@ -123,7 +123,7 @@ class UpsampleBlock(nn.Module):
 class EncoderHead(nn.Module):
     def __init__(self, channels, features, num_classes):
         super().__init__()
-        self.drop = nn.Dropout(p=0.2)
+        self.drop = nn.Dropout(p=0.5)
         self.conv = nn.Conv2d(channels,num_classes,1)
         self.avgpool = nn.AvgPool2d(features, None, 0)
         self.sigmoid = nn.Sigmoid()
