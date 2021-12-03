@@ -132,7 +132,7 @@ class EncoderHead(nn.Module):
         x = self.drop(x)
         x = self.conv(x)
         x = self.avgpool(x)
-        x = x.view(-1)
+        x = x.view(x.shape[0],-1)
         x = self.sigmoid(x)
         return x
 class Unet(nn.Module):
@@ -155,6 +155,7 @@ class Unet(nn.Module):
         self.backbone_name = backbone_name
 
         self.backbone, self.shortcut_features, self.bb_out_name = get_backbone(backbone_name, pretrained=pretrained)
+        self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
         shortcut_chs, bb_out_chs, bb_out_features = self.infer_skip_channels(infer_tensor)
         if shortcut_features != 'default':
             self.shortcut_features = shortcut_features
