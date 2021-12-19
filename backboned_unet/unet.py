@@ -66,57 +66,99 @@ def get_backbone(name, pretrained=True):
 
     return backbone, feature_names, backbone_output
 
+class Conv_block_half(nn.Module):
+    def __init__(self, ch_in, ch_out):
+        super(Conv_block_half, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(ch_in, ch_out, kernel_size=3,
+                      stride=1, padding=1, bias=True),
+            nn.BatchNorm2d(ch_out),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        x = self.conv(x)
+        return x
+
+
+class Conv_block_full(nn.Module):
+    def __init__(self, ch_in, ch_out):
+        super(Conv_block_full, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(ch_in, ch_out, kernel_size=3,
+                      stride=1, padding=1, bias=True),
+            nn.BatchNorm2d(ch_out),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(ch_out, ch_out, kernel_size=3,
+                      stride=1, padding=1, bias=True),
+            nn.BatchNorm2d(ch_out),
+            nn.ReLU(inplace=True)
+        )
+
 
 class UpsampleBlock(nn.Module):
 
     # TODO: separate parametric and non-parametric classes?
     # TODO: skip connection concatenated OR added
 
-    def __init__(self, ch_in, ch_out=None, skip_in=0, use_bn=True, parametric=False):
+    def __init__(self, ch_in, ch_out=None, skip_in=0, use_bn=True, parametric=False, attention=False):
         super(UpsampleBlock, self).__init__()
 
+        self.attention = attention
         self.parametric = parametric
-        ch_out = ch_in/2 if ch_out is None else ch_out
+        ch_out = ch_in//2 if ch_out is None else ch_out
 
-        # first convolution: either transposed conv, or conv following the skip connection
-        if parametric:
+        if attention:
+            pass
+        else:
             # versions: kernel=4 padding=1, kernel=2 padding=0
             self.up = nn.ConvTranspose2d(in_channels=ch_in, out_channels=ch_out, kernel_size=(4, 4),
                                          stride=2, padding=1, output_padding=0, bias=(not use_bn))
             self.bn1 = nn.BatchNorm2d(ch_out) if use_bn else None
-        else:
-            self.up = None
-            ch_in = ch_in + skip_in
-            self.conv1 = nn.Conv2d(in_channels=ch_in, out_channels=ch_out, kernel_size=(3, 3),
-                                   stride=1, padding=1, bias=(not use_bn))
-            self.bn1 = nn.BatchNorm2d(ch_out) if use_bn else None
 
         self.relu = nn.ReLU(inplace=True)
 
-        # second convolution
-        conv2_in = ch_out if not parametric else ch_out + skip_in
-        self.conv2 = nn.Conv2d(in_channels=conv2_in, out_channels=ch_out, kernel_size=(3, 3),
-                               stride=1, padding=1, bias=(not use_bn))
-        self.bn2 = nn.BatchNorm2d(ch_out) if use_bn else None
+        if attention:
+            if skip_in != 0:
+                conv2_in = skip_in + skip_in
+            else:
+                conv2_in = ch_out
+        else:
+            conv2_in = ch_out + skip_in
 
-    def forward(self, x, skip_connection=None):
+        self.conv_full = Conv_block_full(conv2_in, ch_out)
+        self.conv_half = Conv_block_half(conv2_in, ch_out)
 
-        x = self.up(x) if self.parametric else F.interpolate(x, size=None, scale_factor=2, mode='bilinear',
-                                                             align_corners=None)
-        if self.parametric:
+        # # second convolution
+        # conv2_in = ch_out if not parametric else ch_out + skip_in
+        # self.conv2 = nn.Conv2d(in_channels=conv2_in, out_channels=ch_out, kernel_size=(3, 3),
+        #                        stride=1, padding=1, bias=(not use_bn))
+        # self.bn2 = nn.BatchNorm2d(ch_out) if use_bn else None
+
+    def forward(self, x, f=None):
+
+        if self.attention:
+            if f is not None:
+                x_g = self.up(x)
+                x_a = self.att(x_g, f)  # x_a has always f shape
+            else:
+                # last upsampling - first resnet output has no features - no need for attention gate
+                x = self.up(x)
+        else:
+            x = self.up(x)
             x = self.bn1(x) if self.bn1 is not None else x
             x = self.relu(x)
 
-        if skip_connection is not None:
-            x = torch.cat([x, skip_connection], dim=1)
+        if f is not None:
+            if self.attention:
+                x = torch.cat([x_a, f], dim=1)
+            else:
+                x = torch.cat([x, f], dim=1)
 
-        if not self.parametric:
-            x = self.conv1(x)
-            x = self.bn1(x) if self.bn1 is not None else x
-            x = self.relu(x)
-        x = self.conv2(x)
-        x = self.bn2(x) if self.bn2 is not None else x
-        x = self.relu(x)
+        if self.full_seg_conv:
+            x = self.conv_full(x)
+        else:
+            x = self.conv_half(x)
 
         return x
 
@@ -129,11 +171,10 @@ class EncoderHead(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        x = self.drop(x)
-        x = self.conv(x)
         x = self.avgpool(x)
-        x = x.view(x.shape[0],-1)
-        x = self.sigmoid(x)
+        x = x.view(x.shape[0], -1)
+        x = self.drop(x)
+        x = self.fc(x)
         return x
 class Unet(nn.Module):
 
